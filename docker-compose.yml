@@ -4,7 +4,7 @@ services:
     container_name: levi
     restart: always
     ports:
-      - "8777:8777"
+      - "127.0.0.1:8777:8777"
     environment:
       LEVI_DB_PATH: /data/levi.db
       PYTHONUNBUFFERED: "1"

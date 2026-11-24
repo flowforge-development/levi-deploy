@@ -5,29 +5,36 @@ Updated: 2026-11-24
 ## What is running
 
 - Repo: `/root/levi-deploy` (GitHub `flowforge-development/levi-deploy`; local commits on top of upstream `e66aa28`)
-- Container: `levi`, built from `Dockerfile`, `restart: always`, healthcheck every 60s
-- Origin: `http://45.76.62.73:8777` (public)
-- HTTPS front door: `https://levi-deploy.vercel.app` (Vercel project `connect-4866/levi-deploy`)
+- Container: `levi`, built from `Dockerfile`, `restart: always`, healthcheck every 60s.
+  Published only on `127.0.0.1:8777`.
+- Caddy (systemd, enabled at boot): terminates TLS on `:80`/`:443` and proxies to
+  `127.0.0.1:8777`. Config: `/etc/caddy/Caddyfile` (also tracked as `Caddyfile`).
+- TLS origin: `https://45-76-62-73.sslip.io` (Let's Encrypt, auto-renews)
+- Front door: `https://levi-deploy.vercel.app` (Vercel project `connect-4866/levi-deploy`)
 - Database: `levi.db`, 588,681,216 bytes, SHA-256
   `dc4fd7aad1a15636e981697f10f7cfc7e7c0ff863841bf4e83eb0365084159c0`, mounted
   read-only at `/data/levi.db`
 - Auth: `LEVI_API_KEY` in `/root/levi-deploy/.env` (mode 600, gitignored). Required on
   every endpoint except `GET/HEAD /health` and CORS `OPTIONS`.
-- Ritual integration values are already in the `connect-4866/ritual` Vercel project
+- Ritual integration values live in the `connect-4866/ritual` Vercel project
   (Production): `LEVI_API_URL`, `LEVI_MCP_URL`, `LEVI_API_KEY`. They take effect on
   Ritual's next deployment.
 
-Vercel config lives outside the repo at `/root/levi-vercel/vercel.json`:
+Request path: browser -> `https://levi-deploy.vercel.app` -> Vercel rewrite ->
+`https://45-76-62-73.sslip.io` (Caddy TLS) -> `127.0.0.1:8777` (container).
+
+`vercel.json` is committed in this repo, so a future Git deployment of this repo on
+Vercel still produces a working proxy.
 
 ```json
 {
   "rewrites": [
-    { "source": "/(.*)", "destination": "http://45.76.62.73:8777/$1" }
+    { "source": "/(.*)", "destination": "https://45-76-62-73.sslip.io/$1" }
   ]
 }
 ```
 
-Redeploy the proxy when the origin IP changes or the edge cache must be cleared:
+Redeploy the proxy when config changes or the edge cache must be cleared:
 
 ```bash
 cd /root/levi-vercel
@@ -40,8 +47,21 @@ Rebuild / restart the API after code or key changes:
 cd /root/levi-deploy
 docker compose up -d --build --force-recreate
 docker compose ps
-curl -s http://localhost:8777/health
+curl -s http://127.0.0.1:8777/health
 ```
+
+Caddy:
+
+```bash
+systemctl status caddy
+caddy validate --config /etc/caddy/Caddyfile
+journalctl -u caddy -n 50
+# after editing /root/levi-deploy/Caddyfile:
+#   cp /root/levi-deploy/Caddyfile /etc/caddy/Caddyfile && systemctl reload caddy
+```
+
+If the VM's public IP changes, update the sslip.io hostname in `/root/levi-deploy/Caddyfile`,
+`/etc/caddy/Caddyfile`, and `vercel.json`, then reload Caddy and redeploy Vercel.
 
 ## Authentication
 
@@ -50,11 +70,10 @@ KEY=$(cut -d= -f2- /root/levi-deploy/.env)
 curl -H "Authorization: Bearer $KEY" https://levi-deploy.vercel.app/verse?ref=John%203:16
 ```
 
-- The key is checked at the origin, so direct-IP access and Vercel access both require it.
+- The key is checked at the origin, so TLS-origin access and Vercel access both require it.
 - Vercel forwards the `Authorization` header; verified with curl and the official MCP SDK.
 - Authenticated GET responses use `Cache-Control: private` plus `Vary: Authorization`,
-  so Vercel's shared edge cache cannot serve data to an unauthenticated caller. Do not
-  switch these back to `public` while auth is enabled.
+  so Vercel's shared edge cache cannot serve data to an unauthenticated caller.
 - `401` responses are `no-store` and include `WWW-Authenticate: Bearer realm="levi"`.
 - `/health` is intentionally public and `no-store` so Docker and uptime probes work.
 - **Never ship the key in browser code.** It belongs only in Ritual's server routes
@@ -167,6 +186,9 @@ claude mcp add --transport http levi https://levi-deploy.vercel.app/mcp \
    exemption, `Vary: Authorization`, and private caching for authenticated data.
 7. Cache policy hardened: `/health`, `/random`, `/sefaria`, `/doctor`, `/study`,
    all error responses, and MCP are `no-store`.
+8. Hardened transport: Docker now binds `127.0.0.1:8777` only; Caddy terminates TLS
+   on `:80`/`:443` (`45-76-62-73.sslip.io`, Let's Encrypt); the Vercel rewrite goes
+   over HTTPS. The API key never crosses a plaintext public link.
 
 ## Important constraints
 
@@ -174,18 +196,17 @@ claude mcp add --transport http levi https://levi-deploy.vercel.app/mcp \
   ("the brain lives in Ritual"). Ritual authenticates users and calls Levi with this
   one server-side key. If per-user quotas/revocation are needed later, add a key
   table or let Ritual sign short-lived JWTs; do not give each browser a static key.
-- **Vercel -> origin is plain HTTP.** The key travels on this leg. It is not exposed
-  to the browser, but the origin leg is unencrypted. Keep the origin IP non-public
-  or add TLS if the threat model changes.
-- **Git integration hazard.** The Vercel project is connected to the GitHub repo
-  but the repo has no `vercel.json`. A push to `main` will trigger a Git deployment
-  that replaces the proxy with a 404. Either disconnect the Git integration
-  (`vercel git disconnect`) or add the rewrite above before pushing.
+- **Fresh clones need `.env`.** `docker-compose.yml` requires `LEVI_API_KEY` via
+  `${LEVI_API_KEY:?...}`, so a clone without `.env` won't start. Create the file or
+  export the variable before `docker compose up`.
+- **IP change procedure.** If the public IP changes: update the sslip.io hostname in
+  `/root/levi-deploy/Caddyfile`, `/etc/caddy/Caddyfile`, and `vercel.json`; reload
+  Caddy; redeploy Vercel. Certificate issuance for the new name is automatic.
 - **Database is pristine.** Do not call write paths against `/root/levi-deploy/levi.db`.
   `/sefaria` is safe now; `levi_backup` and the CLI write paths are not exposed
   remotely.
-- `ufw` is active, but Docker publishes port 8777 past it. The origin is reachable
-  directly at the public IP; this is expected and now requires the key.
+- `ufw` is active: 22, 80, 443 allowed. Port 8777 is not published externally; the
+  only path to the container is through Caddy on loopback.
 
 ## Useful checks
 
@@ -193,9 +214,10 @@ claude mcp add --transport http levi https://levi-deploy.vercel.app/mcp \
 docker compose ps
 docker logs levi --tail 20
 docker stats --no-stream levi
-systemctl is-enabled docker
+systemctl is-active caddy && systemctl is-enabled caddy
 git -C /root/levi-deploy status --short
 sha256sum /root/levi-deploy/levi.db
+ss -ltnp | grep -E ':(80|443|8777)\b'
 ```
 
 If `levi.db` is ever replaced by a 134-byte pointer, restore it with:
