@@ -8,5 +8,6 @@ services:
     environment:
       LEVI_DB_PATH: /data/levi.db
       PYTHONUNBUFFERED: "1"
+      LEVI_API_KEY: ${LEVI_API_KEY:?LEVI_API_KEY is required; put it in .env}
     volumes:
       - ./levi.db:/data/levi.db:ro

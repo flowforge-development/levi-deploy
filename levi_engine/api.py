@@ -10,6 +10,7 @@ Gate: set LEVI_API_KEY to require `Authorization: Bearer <key>` on every request
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import sqlite3
@@ -29,7 +30,8 @@ class Handler(BaseHTTPRequestHandler):
         if not API_KEY:
             return True
         header = self.headers.get("Authorization", "")
-        return header == f"Bearer {API_KEY}" or header == API_KEY
+        return (hmac.compare_digest(header, f"Bearer {API_KEY}")
+                or hmac.compare_digest(header, API_KEY))
 
     def _send(self, obj, code=200, cache=True):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
@@ -37,8 +39,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
+        if API_KEY:
+            self.send_header("Vary", "Authorization")
+        if code == 401:
+            self.send_header("WWW-Authenticate", 'Bearer realm="levi"')
         if cache and code < 400:
-            self.send_header("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800")
+            if API_KEY:
+                # Auth-gated data must never land in a shared edge cache.
+                self.send_header("Cache-Control", "private, max-age=300, stale-while-revalidate=600")
+            else:
+                self.send_header("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800")
         else:
             self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
@@ -55,9 +65,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if not self._authed():
-            return self._send({"error": "unauthorized"}, 401)
         u = urlparse(self.path)
+        # /health stays public so the container healthcheck and uptime probes work.
+        if u.path != "/health" and not self._authed():
+            return self._send({"error": "unauthorized"}, 401)
         q = {k: v[-1] for k, v in parse_qs(u.query).items()}
         if u.path == "/mcp":
             return self._send({"error": "method not allowed"}, 405, cache=False)
@@ -70,11 +81,17 @@ class Handler(BaseHTTPRequestHandler):
                     "/crossref?ref=Rom 8:28", "/search?q=living water&limit=20",
                     "/word?q=H7307", "/topic?q=grace", "/commentary?ref=John 3:16",
                     "/overlap?book=Romans", "/character?q=Moses", "/ancient?ref=Genesis 1:1",
-                    "/sefaria?ref=Genesis 1:1", "/books", "/random", "/stats", "/doctor"],
-                    "mcp": "POST /mcp (MCP over HTTP, JSON-RPC)"})
+                    "/sefaria?ref=Genesis 1:1", "/books", "/random", "/stats", "/doctor",
+                    "/study?q=living water&limit=6"],
+                    "mcp": "POST /mcp (MCP over HTTP, JSON-RPC)",
+                    "auth": "Authorization: Bearer <key>"})
             if u.path == "/query":
                 return self._send(query.multi(q.get("ref", ""), caps=q.get("caps", ""),
                                               q=q.get("q", ""), limit=int(q.get("limit", 20))))
+            if u.path == "/study":
+                data = query.study_bundle(q=q.get("q", ""), ref=q.get("ref", ""),
+                                          limit=q.get("limit", 6))
+                return self._send(data, 200 if data["count"] else 404, cache=False)
             if u.path == "/verse":
                 data = query.get_verse(q.get("ref", ""))
                 return self._send(data, 200 if data else 404)

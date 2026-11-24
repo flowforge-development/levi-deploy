@@ -555,6 +555,38 @@ def context_json(ref: str, full: bool = False, user_id: str | None = None) -> st
     return json.dumps(v, ensure_ascii=False, indent=2, default=str)
 
 
+STUDY_SYSTEM = (
+    "You are Levi, a Bible-study retrieval-and-synthesis engine. Answer only from the "
+    "provided sources. Distinguish what the text says, what the original languages add, "
+    "what the historical/cultural context suggests, and what is later interpretation. "
+    "Flag uncertainty. Do not invent citations."
+)
+
+
+def study_bundle(q: str = "", ref: str = "", limit: int = 6) -> dict:
+    """Grounded sources plus a ready-to-use prompt for a client-side LLM."""
+    limit = max(1, min(int(limit), 12))
+    sources: list[dict] = []
+    if ref:
+        if get_verse(ref):
+            sources.append({"ref": ref,
+                            "context": context_markdown(ref, full=False, user_id=None)})
+    elif q:
+        for h in search(q, limit=limit):
+            if "error" in h:
+                continue
+            r = ref_label(h["book"], h["chapter"], h["verse"])
+            sources.append({"ref": r,
+                            "context": context_markdown(r, full=False, user_id=None)})
+    question = q or ref
+    prompt = (
+        f"{STUDY_SYSTEM}\n\nQUESTION: {question}\n\nSOURCES:\n"
+        + "\n\n---\n\n".join(s["context"] for s in sources)
+    )
+    return {"query": q, "ref": ref or None, "count": len(sources),
+            "sources": sources, "prompt": prompt}
+
+
 # ── Stats / misc ─────────────────────────────────────────────────────
 
 def stats() -> dict:
