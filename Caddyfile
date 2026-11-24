@@ -1,0 +1,8 @@
+# Optional: HTTPS for direct browser clients (needs a real domain pointed at this box).
+# When you own a domain, replace levi.example.com and put Caddy in front:
+#   docker run -d --name caddy -p 80:80 -p 443:443 \
+#     -v $PWD/Caddyfile:/etc/caddy/Caddyfile caddy
+
+levi.example.com {
+    reverse_proxy localhost:8777
+}

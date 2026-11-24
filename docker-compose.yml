@@ -7,7 +7,6 @@ services:
       - "8777:8777"
     environment:
       LEVI_DB_PATH: /data/levi.db
-      LEVI_API_KEY: ${LEVI_API_KEY:?set LEVI_API_KEY in .env}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./levi.db:/data/levi.db:ro
