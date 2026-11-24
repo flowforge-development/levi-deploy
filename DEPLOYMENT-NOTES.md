@@ -15,10 +15,13 @@ Updated: 2026-11-24
   `dc4fd7aad1a15636e981697f10f7cfc7e7c0ff863841bf4e83eb0365084159c0`, mounted
   read-only at `/data/levi.db`
 - Auth: `LEVI_API_KEY` in `/root/levi-deploy/.env` (mode 600, gitignored). Required on
-  every endpoint except `GET/HEAD /health` and CORS `OPTIONS`.
+  every endpoint except `GET/HEAD /health` and CORS `OPTIONS`. Compose treats the key
+  as optional (`${LEVI_API_KEY:-}`): unset = the original public read-only door.
 - Ritual integration values live in the `connect-4866/ritual` Vercel project
-  (Production): `LEVI_API_URL`, `LEVI_MCP_URL`, `LEVI_API_KEY`. They take effect on
-  Ritual's next deployment.
+  (Production): `LEVI_API_URL`, `LEVI_MCP_URL`, `LEVI_API_KEY`.
+- **Ritual is live and grounded** (commit `2ea5e7d`): `/api/enrich` + `/api/related`
+  serve live Levi data in production, and chat/study/verse generation is grounded in
+  the Levi database via `app/api/lib/levi.ts` (fails closed when Levi is unreachable).
 
 Request path: browser -> `https://levi-deploy.vercel.app` -> Vercel rewrite ->
 `https://45-76-62-73.sslip.io` (Caddy TLS) -> `127.0.0.1:8777` (container).
@@ -196,9 +199,8 @@ claude mcp add --transport http levi https://levi-deploy.vercel.app/mcp \
   ("the brain lives in Ritual"). Ritual authenticates users and calls Levi with this
   one server-side key. If per-user quotas/revocation are needed later, add a key
   table or let Ritual sign short-lived JWTs; do not give each browser a static key.
-- **Fresh clones need `.env`.** `docker-compose.yml` requires `LEVI_API_KEY` via
-  `${LEVI_API_KEY:?...}`, so a clone without `.env` won't start. Create the file or
-  export the variable before `docker compose up`.
+- **Fresh clones stay keyless.** `docker-compose.yml` uses `${LEVI_API_KEY:-}`: a
+  clone without `.env` runs the public read-only door, matching README-AGENT.
 - **IP change procedure.** If the public IP changes: update the sslip.io hostname in
   `/root/levi-deploy/Caddyfile`, `/etc/caddy/Caddyfile`, and `vercel.json`; reload
   Caddy; redeploy Vercel. Certificate issuance for the new name is automatic.

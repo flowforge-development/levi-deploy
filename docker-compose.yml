@@ -8,6 +8,8 @@ services:
     environment:
       LEVI_DB_PATH: /data/levi.db
       PYTHONUNBUFFERED: "1"
-      LEVI_API_KEY: ${LEVI_API_KEY:?LEVI_API_KEY is required; put it in .env}
+      # Optional: when set (see .env), every endpoint except /health requires
+      # Authorization: Bearer <key>. Unset keeps the public read-only door.
+      LEVI_API_KEY: ${LEVI_API_KEY:-}
     volumes:
       - ./levi.db:/data/levi.db:ro
