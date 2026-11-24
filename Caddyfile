@@ -1,8 +1,9 @@
-# TLS origin for the Vercel proxy. The container binds only to 127.0.0.1:8777.
-# sslip.io resolves this hostname to the VM's public IP, so Let's Encrypt can issue
-# a certificate without owning a domain. If the IP changes, update this hostname,
-# the Vercel rewrite, and redeploy the proxy.
-
+# Levi scripture door (Vercel front-door origin)
 45-76-62-73.sslip.io {
     reverse_proxy 127.0.0.1:8777
+}
+
+# Levi generation relay (Ritual's chat/study stream target)
+relay.45-76-62-73.sslip.io {
+    reverse_proxy 127.0.0.1:8787
 }

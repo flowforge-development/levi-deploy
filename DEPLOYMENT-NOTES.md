@@ -7,8 +7,14 @@ Updated: 2026-11-24
 - Repo: `/root/levi-deploy` (GitHub `flowforge-development/levi-deploy`; local commits on top of upstream `e66aa28`)
 - Container: `levi`, built from `Dockerfile`, `restart: always`, healthcheck every 60s.
   Published only on `127.0.0.1:8777`.
-- Caddy (systemd, enabled at boot): terminates TLS on `:80`/`:443` and proxies to
-  `127.0.0.1:8777`. Config: `/etc/caddy/Caddyfile` (also tracked as `Caddyfile`).
+- Relay: `levi-relay.service` (systemd, enabled, restart=always) — the desktop agent's
+  generation relay at `/root/levi/relay`, listening on `127.0.0.1:8787`, env in
+  `/root/levi/relay/.env` (mode 600). Streams OpenRouter chat/study with no serverless
+  cap; JWT-authed; grounding goes to the local Levi.
+- Caddy (systemd, enabled at boot): terminates TLS on `:80`/`:443`:
+  - `45-76-62-73.sslip.io` → `127.0.0.1:8777` (scripture door)
+  - `relay.45-76-62-73.sslip.io` → `127.0.0.1:8787` (generation relay)
+  Config: `/etc/caddy/Caddyfile` (also tracked as `Caddyfile`).
 - TLS origin: `https://45-76-62-73.sslip.io` (Let's Encrypt, auto-renews)
 - Front door: `https://levi-deploy.vercel.app` (Vercel project `connect-4866/levi-deploy`)
 - Database: `levi.db`, 588,681,216 bytes, SHA-256
@@ -94,6 +100,16 @@ docker compose up -d --force-recreate
 ```
 
 ## Ritual integration
+
+**Relay (primary generation path):** `https://relay.45-76-62-73.sslip.io`
+- `GET /health`, `POST /chat` (`{messages, mode}`), `POST /study` (`{query}`), all
+  `Authorization: Bearer <supabase JWT>`. `POST` streams `text/plain` markdown.
+- Runs from `/root/levi/relay` (repo: `flowforge-development/levi`, `relay/`).
+- Env (in `/root/levi/relay/.env`): OpenRouter paid/free keys, Supabase URL + anon
+  key, `LEVI_API_URL=http://127.0.0.1:8777`, `LEVI_API_KEY` (local Levi is keyed).
+- Manage: `systemctl restart levi-relay` / `journalctl -u levi-relay -f`.
+- Update: `cd /root/levi/relay && git pull && npm install && systemctl restart levi-relay`.
+- Caddy timeout defaults (none) keep >300s streams alive end-to-end.
 
 The Ritual browser app must call its own Next.js API routes. Those server routes call
 Levi with the secret; the key never reaches the client.
@@ -217,9 +233,10 @@ docker compose ps
 docker logs levi --tail 20
 docker stats --no-stream levi
 systemctl is-active caddy && systemctl is-enabled caddy
+systemctl is-active levi-relay && systemctl is-enabled levi-relay
 git -C /root/levi-deploy status --short
 sha256sum /root/levi-deploy/levi.db
-ss -ltnp | grep -E ':(80|443|8777)\b'
+ss -ltnp | grep -E ':(80|443|8777|8787)\b'
 ```
 
 If `levi.db` is ever replaced by a 134-byte pointer, restore it with:
