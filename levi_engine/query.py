@@ -711,8 +711,10 @@ def books() -> list[dict]:
 
 
 def random_verse() -> dict | None:
-    r = _one("SELECT id FROM verses ORDER BY RANDOM() LIMIT 1")
-    return get_verse(r["id"]) if r else None
+    r = _one("SELECT book,chapter,verse FROM verses ORDER BY RANDOM() LIMIT 1")
+    if not r:
+        return None
+    return get_verse(ref_label(r["book"], r["chapter"], r["verse"]))
 
 
 def add_note(ref: str, body: str, tag: str = "") -> dict:

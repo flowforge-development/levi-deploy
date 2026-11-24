@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import time
 import urllib.parse
 import urllib.request
@@ -74,12 +75,17 @@ def _clean(s) -> str:
     return s.strip()
 
 
-def _cache_commentary(conn, verse_id, author, work, he, en, source="Sefaria"):
+def _commentary_text(he, en) -> str:
     text = ""
     if he:
         text += "[Hebrew/Aramaic]\n" + _clean(he)
     if en:
         text += ("\n\n[English]\n" if text else "") + _clean(en)
+    return text
+
+
+def _cache_commentary(conn, verse_id, author, work, he, en, source="Sefaria"):
+    text = _commentary_text(he, en)
     if not text:
         return 0
     conn.execute(
@@ -118,9 +124,21 @@ def fetch_verse(ref: str, commentators=("rashi", "ibn_ezra", "ramban"),
             path = f"{title}.{p['chapter']}.{p['verse']}"
             try:
                 data = _get(path)
-                n = _cache_commentary(conn, vid, author, title.replace("_", " "), data.get("he"), data.get("text"))
+                text = _commentary_text(data.get("he"), data.get("text"))
+                try:
+                    n = _cache_commentary(conn, vid, author, title.replace("_", " "),
+                                          data.get("he"), data.get("text"))
+                    conn.commit()
+                except sqlite3.OperationalError as exc:
+                    # The deployed database is read-only. Still return the text.
+                    if "readonly" not in str(exc).lower():
+                        raise
+                    conn.rollback()
+                    n = 1 if text else 0
+                    if text:
+                        out.setdefault("texts", {})[key] = {
+                            "author": author, "work": title.replace("_", " "), "text": text}
                 out["fetched"][key] = n
-                conn.commit()
             except Exception as exc:
                 out["fetched"][key] = f"error: {exc}"
             time.sleep(0.2)

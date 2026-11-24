@@ -301,8 +301,12 @@ def handle(msg: dict):
     method = msg.get("method")
     mid = msg.get("id")
     if method == "initialize":
+        params = msg.get("params") or {}
+        proto = params.get("protocolVersion")
+        if proto not in ("2024-11-05", "2025-03-26", "2025-06-18"):
+            proto = "2024-11-05"
         return {"jsonrpc": "2.0", "id": mid, "result": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": proto,
             "capabilities": {"tools": {"listChanged": False},
                              "prompts": {"listChanged": False}},
             "serverInfo": {"name": "levi-monster", "version": __version__},

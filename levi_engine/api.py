@@ -20,6 +20,9 @@ from . import query
 
 API_KEY = os.environ.get("LEVI_API_KEY", "")
 
+# Tools that write to the host (backups) are not offered on the public door.
+MCP_BLOCKED = {"levi_backup"}
+
 
 class Handler(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
@@ -28,22 +31,27 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         return header == f"Bearer {API_KEY}" or header == API_KEY
 
-    def _send(self, obj, code=200):
+    def _send(self, obj, code=200, cache=True):
         body = json.dumps(obj, ensure_ascii=False, default=str).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800")
+        self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
+        if cache and code < 400:
+            self.send_header("Cache-Control", "public, max-age=86400, stale-while-revalidate=604800")
+        else:
+            self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        if not isinstance(obj, (dict, list)) or body != b"{}" or code < 400:
+        if self.command != "HEAD" and (not isinstance(obj, (dict, list)) or body != b"{}" or code < 400):
             self.wfile.write(body)
 
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version")
+        self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
         self.end_headers()
 
     def do_GET(self):
@@ -51,6 +59,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"error": "unauthorized"}, 401)
         u = urlparse(self.path)
         q = {k: v[-1] for k, v in parse_qs(u.query).items()}
+        if u.path == "/mcp":
+            return self._send({"error": "method not allowed"}, 405, cache=False)
         try:
             if u.path in ("/", "/help"):
                 return self._send({"name": "levi", "one_api": "GET /query?ref=<ref>&caps=text,interlinear,context,language,purpose,chunks,crossref,ancient,topics", "endpoints": [
@@ -60,7 +70,8 @@ class Handler(BaseHTTPRequestHandler):
                     "/crossref?ref=Rom 8:28", "/search?q=living water&limit=20",
                     "/word?q=H7307", "/topic?q=grace", "/commentary?ref=John 3:16",
                     "/overlap?book=Romans", "/character?q=Moses", "/ancient?ref=Genesis 1:1",
-                    "/sefaria?ref=Genesis 1:1", "/books", "/random", "/stats", "/doctor"]})
+                    "/sefaria?ref=Genesis 1:1", "/books", "/random", "/stats", "/doctor"],
+                    "mcp": "POST /mcp (MCP over HTTP, JSON-RPC)"})
             if u.path == "/query":
                 return self._send(query.multi(q.get("ref", ""), caps=q.get("caps", ""),
                                               q=q.get("q", ""), limit=int(q.get("limit", 20))))
@@ -108,19 +119,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send((v or {}).get("ancient_versions", []))
             if u.path == "/sefaria":
                 from . import sefaria
-                return self._send(sefaria.fetch_verse(q.get("ref", "")))
+                return self._send(sefaria.fetch_verse(q.get("ref", "")), cache=False)
             if u.path == "/books":
                 return self._send(query.books())
             if u.path == "/sources":
                 return self._send(query.sources())
             if u.path == "/random":
-                return self._send(query.random_verse() or {})
+                return self._send(query.random_verse() or {}, cache=False)
             if u.path == "/stats":
                 return self._send(query.stats())
             if u.path == "/doctor":
-                return self._send(query.doctor())
+                return self._send(query.doctor(), cache=False)
             if u.path == "/health":
-                return self._send({"ok": True, "one_api": "scripture-only"})
+                return self._send({"ok": True, "one_api": "scripture-only"}, cache=False)
             return self._send({"error": "not found"}, 404)
         except ValueError as exc:
             return self._send({"error": str(exc)}, 400)
@@ -128,6 +139,69 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"error": f"db: {exc}"}, 500)
         except Exception as exc:
             return self._send({"error": str(exc)}, 500)
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_POST(self):
+        """MCP streamable HTTP transport (stateless JSON-RPC over POST)."""
+        if not self._authed():
+            return self._send({"error": "unauthorized"}, 401, cache=False)
+        u = urlparse(self.path)
+        if u.path != "/mcp":
+            return self._send({"error": "not found"}, 404, cache=False)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return self._send({"jsonrpc": "2.0", "id": None,
+                               "error": {"code": -32700, "message": "empty body"}}, 400, cache=False)
+        if length > 1_000_000:
+            return self._send({"jsonrpc": "2.0", "id": None,
+                               "error": {"code": -32600, "message": "body too large"}}, 413, cache=False)
+        try:
+            msg = json.loads(self.rfile.read(length))
+        except (ValueError, UnicodeDecodeError):
+            return self._send({"jsonrpc": "2.0", "id": None,
+                               "error": {"code": -32700, "message": "parse error"}}, 400, cache=False)
+
+        from . import mcp
+        if isinstance(msg, list):
+            out = [r for r in (self._mcp_dispatch(mcp, m) for m in msg) if r is not None]
+            if not out:
+                return self._accepted()
+            return self._send(out, cache=False)
+        out = self._mcp_dispatch(mcp, msg)
+        if out is None:
+            return self._accepted()
+        return self._send(out, cache=False)
+
+    def _mcp_dispatch(self, mcp, msg):
+        if not isinstance(msg, dict):
+            return {"jsonrpc": "2.0", "id": None,
+                    "error": {"code": -32600, "message": "invalid request"}}
+        mid = msg.get("id")
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        if method == "tools/call" and params.get("name") in MCP_BLOCKED:
+            return {"jsonrpc": "2.0", "id": mid,
+                    "error": {"code": -32601, "message": "tool not available here"}}
+        out = mcp.handle(msg)
+        if method == "tools/list" and out and "result" in out:
+            out["result"]["tools"] = [t for t in out["result"]["tools"]
+                                      if t.get("name") not in MCP_BLOCKED]
+        if method == "initialize" and out and "result" in out:
+            out["result"]["capabilities"] = {"tools": {"listChanged": False},
+                                             "prompts": {"listChanged": False}}
+        return out
+
+    def _accepted(self):
+        self.send_response(202)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def log_message(self, fmt, *args):
         pass  # quiet by default
