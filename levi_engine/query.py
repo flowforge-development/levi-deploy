@@ -838,3 +838,77 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
         if len(out) >= limit:
             break
     return {"query": q, "results": out}
+
+
+# ── Graph-neighbor search: the brain's own 3D space ──────────────────
+# The site's 3D visualization is graph3d.json — every chapter embedded in R^3
+# by the normalized-Laplacian of the cross-reference graph, then force-relaxed.
+# Chapters that sit together are associationally close. graph_neighbors finds
+# the nearest chapters to a seed (a ref, or the top FTS hits of a phrase).
+
+_graph3d_cache = None
+
+
+def _graph3d():
+    global _graph3d_cache
+    if _graph3d_cache is not None:
+        return _graph3d_cache
+    import os
+    path = os.environ.get("LEVI_GRAPH3D_PATH", "graph3d.json")
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+            coords = {c["id"]: (c["x"], c["y"], c["z"]) for c in data.get("chapters", [])}
+        if not coords:
+            raise RuntimeError("no chapters")
+    except Exception as exc:
+        print(f"[levi] graph3d unavailable: {exc}")
+        _graph3d_cache = None
+        return None
+    _graph3d_cache = (coords, list(coords.keys()))
+    return _graph3d_cache
+
+
+def graph_neighbors(ref: str = None, q: str = None, limit: int = 10) -> dict:
+    g = _graph3d()
+    if g is None:
+        return {"error": "graph index unavailable", "results": []}
+    coords, cids = g
+    limit = max(1, min(int(limit or 10), 40))
+
+    seeds = set()
+    if ref:
+        p = parse_ref(ref)
+        if p and p.get("chapter"):
+            seeds.add(f'{p["book"]}.{p["chapter"]}')
+    if q:
+        for r in search((q or "").strip(), limit=6):
+            if "book" in r and "chapter" in r:
+                seeds.add(f'{r["book"]}.{r["chapter"]}')
+    if not seeds:
+        return {"error": "ref or q required", "results": []}
+
+    best = {}
+    for seed in seeds:
+        base = coords.get(seed)
+        if base is None:
+            continue
+        sx, sy, sz = base
+        for cid in cids:
+            if cid == seed:
+                continue
+            x, y, z = coords[cid]
+            d2 = (x - sx) ** 2 + (y - sy) ** 2 + (z - sz) ** 2
+            if cid not in best or d2 < best[cid][0]:
+                best[cid] = (d2,)
+    ordered = sorted(best.items(), key=lambda t: t[1][0])[:limit]
+    out = []
+    for cid, (d2,) in ordered:
+        book, chapter = cid.rsplit(".", 1)
+        out.append({
+            "book": book,
+            "chapter": int(chapter),
+            "ref": f"{book} {chapter}",
+            "distance": round(float(d2) ** 0.5, 4),
+        })
+    return {"ref": ref, "q": q, "results": out}

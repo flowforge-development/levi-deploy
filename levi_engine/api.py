@@ -142,6 +142,9 @@ class Handler(BaseHTTPRequestHandler):
                                                         limit=int(q.get("limit", 15)),
                                                         testament=q.get("testament"),
                                                         book=q.get("book")))
+            if u.path == "/graph_neighbors":
+                return self._send(query.graph_neighbors(ref=q.get("ref"), q=q.get("q"),
+                                                        limit=int(q.get("limit", 10))))
             if u.path == "/books":
                 return self._send(query.books())
             if u.path == "/sources":
