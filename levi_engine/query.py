@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from collections import defaultdict
@@ -765,21 +766,47 @@ def list_notes(ref: str = None, limit: int = 50) -> list[dict]:
     return _rows("SELECT id,ref,tag,body,created FROM notes ORDER BY id DESC LIMIT ?", (limit,))
 
 
-# ── Semantic verse search (bge-m3 vectors, lazy-loaded) ──────────────
-# Built once by vdb/vecbuild.py (fp16, unit-normed) into verse_vectors.db.
-# The model + vectors load on FIRST call so other endpoints stay light.
-
+# ── Semantic (vector) verse search ───────────────────────────────────────
+# Index: shipped from the HOST machine (vecbuild.py, BAAI/bge-m3, fp16,
+# verse_id -> vec), mounted read-only at LEVI_VEC_PATH.
+# Query vectors: an HTTP embeddings endpoint using the SAME model
+# (LEVI_EMBED_URL / LEVI_EMBED_MODEL / LEVI_EMBED_KEY, OpenAI-compatible),
+# with local SentenceTransformer as fallback on bigger boxes.
 _semantic_cache = None
+
+
+def _embed_query(q: str):
+    url = os.environ.get("LEVI_EMBED_URL", "")
+    import urllib.request
+
+    if url:
+        model = os.environ.get("LEVI_EMBED_MODEL", "BAAI/bge-m3")
+        key = os.environ.get("LEVI_EMBED_KEY", "")
+        payload = json.dumps({"model": model, "input": [q]}).encode()
+        req = urllib.request.Request(
+            url.rstrip("/") + "/embeddings", data=payload,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {key}"} if key else {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode())
+        vec = data["data"][0]["embedding"]
+        import numpy as np
+
+        v = np.asarray(vec, dtype=np.float32)
+        n = np.linalg.norm(v)
+        return v / n if n else v
+
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer(os.environ.get("LEVI_EMBED_MODEL", "BAAI/bge-m3"))
+    return model.encode([q], normalize_embeddings=True)[0].astype("float32")
 
 
 def _semantic():
     global _semantic_cache
     if _semantic_cache is not None:
         return _semantic_cache
-    import os
-
     import numpy as np
-    from sentence_transformers import SentenceTransformer
 
     vec_path = os.environ.get("LEVI_VEC_PATH", "verse_vectors.db")
     try:
@@ -787,17 +814,16 @@ def _semantic():
         rows = vdb.execute("SELECT verse_id, dim, vec FROM verse_vectors").fetchall()
         if not rows:
             raise RuntimeError("no vectors")
-        ids = [r[0] for r in rows]
+        ids_ = [r[0] for r in rows]
         M = np.stack([np.frombuffer(r[2], dtype=np.float16).astype(np.float32) for r in rows])
         norms = np.linalg.norm(M, axis=1, keepdims=True)
         norms[norms == 0] = 1e-8
         M = M / norms
-        model = SentenceTransformer(os.environ.get("LEVI_EMBED_MODEL", "BAAI/bge-m3"))
     except Exception as exc:
         print(f"[levi] semantic index unavailable: {exc}")
         _semantic_cache = None
         return None
-    _semantic_cache = (model, ids, M)
+    _semantic_cache = (ids_, M)
     return _semantic_cache
 
 
@@ -808,17 +834,21 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
     import numpy as np
 
     parts = _semantic()
-    if parts is None:
-        return {"error": "semantic index unavailable", "results": []}
-    model, ids, M = parts
     b = resolve_book(book) if book else None
     limit = max(1, min(int(limit or 15), 50))
-    qv = model.encode([q], normalize_embeddings=True)[0].astype(np.float32)
+    if parts is None:
+        return {"error": "semantic index unavailable", "results": []}
+    ids_, M = parts
+    try:
+        qv = _embed_query(q)
+    except Exception as exc:
+        print(f"[levi] query embedding failed: {exc}")
+        return {"error": f"query embedding failed: {exc}", "results": []}
     scores = M @ qv
     idx = np.argsort(-scores)[: limit * 6]
     out, seen = [], set()
     for i in idx:
-        vid = ids[i]
+        vid = ids_[i]
         if vid in seen:
             continue
         v = _one("SELECT book, chapter, verse, kjv_text, testament FROM verses WHERE id=?", (vid,))
@@ -840,12 +870,7 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
     return {"query": q, "results": out}
 
 
-# ── Graph-neighbor search: the brain's own 3D space ──────────────────
-# The site's 3D visualization is graph3d.json — every chapter embedded in R^3
-# by the normalized-Laplacian of the cross-reference graph, then force-relaxed.
-# Chapters that sit together are associationally close. graph_neighbors finds
-# the nearest chapters to a seed (a ref, or the top FTS hits of a phrase).
-
+# ── Graph-neighbor search: the brain's own 3D space ────────────────────
 _graph3d_cache = None
 
 
@@ -853,7 +878,6 @@ def _graph3d():
     global _graph3d_cache
     if _graph3d_cache is not None:
         return _graph3d_cache
-    import os
     path = os.environ.get("LEVI_GRAPH3D_PATH", "graph3d.json")
     try:
         with open(path) as fh:
@@ -912,3 +936,4 @@ def graph_neighbors(ref: str = None, q: str = None, limit: int = 10) -> dict:
             "distance": round(float(d2) ** 0.5, 4),
         })
     return {"ref": ref, "q": q, "results": out}
+

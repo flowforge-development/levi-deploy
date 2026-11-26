@@ -3,6 +3,9 @@ FROM python:3.13-slim
 WORKDIR /app
 COPY levi_engine ./levi_engine
 
+# numpy: cosine scoring for semantic search (std-only otherwise kept)
+RUN pip install --no-cache-dir numpy
+
 ENV PYTHONUNBUFFERED=1 \
     LEVI_DB_PATH=/data/levi.db
 

@@ -138,13 +138,14 @@ class Handler(BaseHTTPRequestHandler):
                 from . import sefaria
                 return self._send(sefaria.fetch_verse(q.get("ref", "")), cache=False)
             if u.path == "/semantic":
+                # Vector search; disabled until the host ships verse_vectors.db
                 return self._send(query.semantic_search(q.get("q", ""),
                                                         limit=int(q.get("limit", 15)),
                                                         testament=q.get("testament"),
-                                                        book=q.get("book")))
+                                                        book=q.get("book")), cache=False)
             if u.path == "/graph_neighbors":
                 return self._send(query.graph_neighbors(ref=q.get("ref"), q=q.get("q"),
-                                                        limit=int(q.get("limit", 10))))
+                                                        limit=int(q.get("limit", 10))), cache=False)
             if u.path == "/books":
                 return self._send(query.books())
             if u.path == "/sources":
