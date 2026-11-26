@@ -137,6 +137,11 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/sefaria":
                 from . import sefaria
                 return self._send(sefaria.fetch_verse(q.get("ref", "")), cache=False)
+            if u.path == "/semantic":
+                return self._send(query.semantic_search(q.get("q", ""),
+                                                        limit=int(q.get("limit", 15)),
+                                                        testament=q.get("testament"),
+                                                        book=q.get("book")))
             if u.path == "/books":
                 return self._send(query.books())
             if u.path == "/sources":

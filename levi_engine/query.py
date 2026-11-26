@@ -763,3 +763,78 @@ def list_notes(ref: str = None, limit: int = 50) -> list[dict]:
         return _rows("SELECT id,ref,tag,body,created FROM notes WHERE ref LIKE ? ORDER BY id DESC LIMIT ?",
                      (f"%{ref}%", limit))
     return _rows("SELECT id,ref,tag,body,created FROM notes ORDER BY id DESC LIMIT ?", (limit,))
+
+
+# ── Semantic verse search (bge-m3 vectors, lazy-loaded) ──────────────
+# Built once by vdb/vecbuild.py (fp16, unit-normed) into verse_vectors.db.
+# The model + vectors load on FIRST call so other endpoints stay light.
+
+_semantic_cache = None
+
+
+def _semantic():
+    global _semantic_cache
+    if _semantic_cache is not None:
+        return _semantic_cache
+    import os
+
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+
+    vec_path = os.environ.get("LEVI_VEC_PATH", "verse_vectors.db")
+    try:
+        vdb = sqlite3.connect(f"file:{vec_path}?mode=ro", uri=True)
+        rows = vdb.execute("SELECT verse_id, dim, vec FROM verse_vectors").fetchall()
+        if not rows:
+            raise RuntimeError("no vectors")
+        ids = [r[0] for r in rows]
+        M = np.stack([np.frombuffer(r[2], dtype=np.float16).astype(np.float32) for r in rows])
+        norms = np.linalg.norm(M, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-8
+        M = M / norms
+        model = SentenceTransformer(os.environ.get("LEVI_EMBED_MODEL", "BAAI/bge-m3"))
+    except Exception as exc:
+        print(f"[levi] semantic index unavailable: {exc}")
+        _semantic_cache = None
+        return None
+    _semantic_cache = (model, ids, M)
+    return _semantic_cache
+
+
+def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = None) -> dict:
+    q = (q or "").strip()
+    if not q:
+        return {"error": "q required", "results": []}
+    import numpy as np
+
+    parts = _semantic()
+    if parts is None:
+        return {"error": "semantic index unavailable", "results": []}
+    model, ids, M = parts
+    b = resolve_book(book) if book else None
+    limit = max(1, min(int(limit or 15), 50))
+    qv = model.encode([q], normalize_embeddings=True)[0].astype(np.float32)
+    scores = M @ qv
+    idx = np.argsort(-scores)[: limit * 6]
+    out, seen = [], set()
+    for i in idx:
+        vid = ids[i]
+        if vid in seen:
+            continue
+        v = _one("SELECT book, chapter, verse, kjv_text, testament FROM verses WHERE id=?", (vid,))
+        if not v:
+            continue
+        if b and v["book"] != b:
+            continue
+        if testament and v["testament"] != testament.upper():
+            continue
+        seen.add(vid)
+        out.append({
+            "ref": f'{v["book"]} {v["chapter"]}:{v["verse"]}',
+            "book": v["book"], "chapter": v["chapter"], "verse": v["verse"],
+            "kjv_text": v["kjv_text"],
+            "score": round(float(scores[i]), 4),
+        })
+        if len(out) >= limit:
+            break
+    return {"query": q, "results": out}
