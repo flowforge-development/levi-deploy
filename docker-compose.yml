@@ -11,7 +11,7 @@ services:
       # Optional: when set (see .env), every endpoint except /health requires
       # Authorization: Bearer <key>. Unset keeps the public read-only door.
       LEVI_API_KEY: ${LEVI_API_KEY:-}
-      LEVI_VEC_PATH: /data/verse_vectors.db
+      LEVI_VEC_PATH: /data/wordindex2.db
       LEVI_GRAPH3D_PATH: /data/graph3d.json
       # Semantic query embedding (same model as the host-built index):
       # LEVI_EMBED_URL: https://openrouter.ai/api/v1
@@ -22,5 +22,5 @@ services:
       LEVI_EMBED_KEY: ${LEVI_EMBED_KEY:-}
     volumes:
       - ./levi.db:/data/levi.db:ro
-      - ./verse_vectors.db:/data/verse_vectors.db:ro
+      - ./wordindex2.db:/data/wordindex2.db:ro
       - ./graph3d.json:/data/graph3d.json:ro
