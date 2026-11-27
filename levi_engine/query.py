@@ -766,9 +766,12 @@ def list_notes(ref: str = None, limit: int = 50) -> list[dict]:
     return _rows("SELECT id,ref,tag,body,created FROM notes ORDER BY id DESC LIMIT ?", (limit,))
 
 
-# ── Semantic (vector) verse search ───────────────────────────────────────
-# Index: shipped from the HOST machine (vecbuild.py, BAAI/bge-m3, fp16,
-# verse_id -> vec), mounted read-only at LEVI_VEC_PATH.
+# ── Semantic search v2 — originals-only word/lemma vectors ─────────────
+# Index: the ORIGINAL VDB build, shipped from the HOST (wordindex.db:
+# 58,645 words + 13,850 lemmas, BAAI/bge-m3 fp32, deduped, wvec table).
+# Query in the same space, then resolve hits to verses through Strong's
+# numbers -> the main interlinear words.strongs_base (indexed). The v1
+# verse-vector index (verse_vectors.db) is retired.
 # Query vectors: an HTTP embeddings endpoint using the SAME model
 # (LEVI_EMBED_URL / LEVI_EMBED_MODEL / LEVI_EMBED_KEY, OpenAI-compatible),
 # with local SentenceTransformer as fallback on bigger boxes.
@@ -808,14 +811,15 @@ def _semantic():
         return _semantic_cache
     import numpy as np
 
-    vec_path = os.environ.get("LEVI_VEC_PATH", "verse_vectors.db")
+    vec_path = os.environ.get("LEVI_VEC_PATH", "wordindex.db")
     try:
         vdb = sqlite3.connect(f"file:{vec_path}?mode=ro", uri=True)
-        rows = vdb.execute("SELECT verse_id, dim, vec FROM verse_vectors").fetchall()
+        rows = vdb.execute(
+            "SELECT vdb_id, lang, surface, strongs, vec FROM wvec WHERE surface IS NOT NULL"
+        ).fetchall()
         if not rows:
             raise RuntimeError("no vectors")
-        ids_ = [r[0] for r in rows]
-        M = np.stack([np.frombuffer(r[2], dtype=np.float16).astype(np.float32) for r in rows])
+        M = np.stack([np.frombuffer(r[4], dtype=np.float32) for r in rows])
         norms = np.linalg.norm(M, axis=1, keepdims=True)
         norms[norms == 0] = 1e-8
         M = M / norms
@@ -823,8 +827,20 @@ def _semantic():
         print(f"[levi] semantic index unavailable: {exc}")
         _semantic_cache = None
         return None
-    _semantic_cache = (ids_, M)
+    _semantic_cache = (rows, M)
     return _semantic_cache
+
+
+def _strongs_bases(lang: str, strongs_csv: str) -> list:
+    # VDB strongs are bare numbers ("976"); the main DB indexes the
+    # zero-padded, prefixed form ("G0976" / "H7225").
+    bases = []
+    for num in (strongs_csv or "").split(","):
+        num = num.strip()
+        if not num.isdigit():
+            continue
+        bases.append(("G" if lang == "grc" else "H") + f"{int(num):04d}")
+    return bases
 
 
 def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = None) -> dict:
@@ -838,21 +854,33 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
     limit = max(1, min(int(limit or 15), 50))
     if parts is None:
         return {"error": "semantic index unavailable", "results": []}
-    ids_, M = parts
+    rows, M = parts
     try:
         qv = _embed_query(q)
     except Exception as exc:
         print(f"[levi] query embedding failed: {exc}")
         return {"error": f"query embedding failed: {exc}", "results": []}
     scores = M @ qv
-    idx = np.argsort(-scores)[: limit * 6]
-    out, seen = [], set()
+    idx = np.argsort(-scores)[:80]
+    # hits are deduped ORIGINALS-ONLY words; resolve them to verses through
+    # Strong's -> the main interlinear (words.strongs_base, indexed).
+    verse_best, verse_hits = {}, {}
     for i in idx:
-        vid = ids_[i]
-        if vid in seen:
+        vdb_id, lang, surface, strongs_csv, _vec = rows[i]
+        bases = _strongs_bases(lang, strongs_csv)
+        if not bases:
             continue
+        s = float(scores[i])
+        for base in bases:
+            for (vid,) in conn().execute("SELECT DISTINCT verse_id FROM words WHERE strongs_base=? LIMIT 150", (base,)):
+                if vid not in verse_best or s > verse_best[vid]:
+                    verse_best[vid] = s
+                verse_hits[vid] = verse_hits.get(vid, 0) + 1
+    ranked = sorted(verse_best.items(), key=lambda t: -(t[1] + 0.02 * min(verse_hits.get(t[0], 1), 5)))[: limit * 3]
+    out, seen = [], set()
+    for vid, s in ranked:
         v = _one("SELECT book, chapter, verse, kjv_text, testament FROM verses WHERE id=?", (vid,))
-        if not v:
+        if not v or vid in seen:
             continue
         if b and v["book"] != b:
             continue
@@ -863,11 +891,12 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
             "ref": f'{v["book"]} {v["chapter"]}:{v["verse"]}',
             "book": v["book"], "chapter": v["chapter"], "verse": v["verse"],
             "kjv_text": v["kjv_text"],
-            "score": round(float(scores[i]), 4),
+            "score": round(s, 4),
         })
         if len(out) >= limit:
             break
-    return {"query": q, "results": out}
+    return {"query": q, "results": out, "index": "originals-words",
+            "vectors": len(rows), "lang": "heb+grc"}
 
 
 # ── Graph-neighbor search: the brain's own 3D space ────────────────────
