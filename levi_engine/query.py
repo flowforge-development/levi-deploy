@@ -811,15 +811,14 @@ def _semantic():
         return _semantic_cache
     import numpy as np
 
-    vec_path = os.environ.get("LEVI_VEC_PATH", "wordindex.db")
+    vec_path = os.environ.get("LEVI_VEC_PATH", "wordindex2.db")
     try:
         vdb = sqlite3.connect(f"file:{vec_path}?mode=ro", uri=True)
-        rows = vdb.execute(
-            "SELECT vdb_id, lang, surface, strongs, vec FROM wvec WHERE surface IS NOT NULL"
-        ).fetchall()
+        rows = vdb.execute("SELECT vdb_id, surface, vec FROM wvec").fetchall()
         if not rows:
             raise RuntimeError("no vectors")
-        M = np.stack([np.frombuffer(r[4], dtype=np.float32) for r in rows])
+        ids_ = [r[0] for r in rows]
+        M = np.stack([np.frombuffer(r[2], dtype=np.float32) for r in rows])
         norms = np.linalg.norm(M, axis=1, keepdims=True)
         norms[norms == 0] = 1e-8
         M = M / norms
@@ -827,26 +826,15 @@ def _semantic():
         print(f"[levi] semantic index unavailable: {exc}")
         _semantic_cache = None
         return None
-    _semantic_cache = (rows, M)
+    _semantic_cache = (vdb, ids_, M)
     return _semantic_cache
-
-
-def _strongs_bases(lang: str, strongs_csv: str) -> list:
-    # VDB strongs are bare numbers ("976"); the main DB indexes the
-    # zero-padded, prefixed form ("G0976" / "H7225").
-    bases = []
-    for num in (strongs_csv or "").split(","):
-        num = num.strip()
-        if not num.isdigit():
-            continue
-        bases.append(("G" if lang == "grc" else "H") + f"{int(num):04d}")
-    return bases
 
 
 def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = None) -> dict:
     q = (q or "").strip()
     if not q:
         return {"error": "q required", "results": []}
+    import math
     import numpy as np
 
     parts = _semantic()
@@ -854,29 +842,30 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
     limit = max(1, min(int(limit or 15), 50))
     if parts is None:
         return {"error": "semantic index unavailable", "results": []}
-    rows, M = parts
+    vdb, ids_, M = parts
     try:
         qv = _embed_query(q)
     except Exception as exc:
         print(f"[levi] query embedding failed: {exc}")
         return {"error": f"query embedding failed: {exc}", "results": []}
+    total_verses = conn().execute("SELECT COUNT(*) FROM verses").fetchone()[0]
     scores = M @ qv
     idx = np.argsort(-scores)[:80]
-    # hits are deduped ORIGINALS-ONLY words; resolve them to verses through
-    # Strong's -> the main interlinear (words.strongs_base, indexed).
-    verse_best, verse_hits = {}, {}
+    # Originals-only meanings: the closest Hebrew/Greek words decide, then the
+    # graph membership (contains -> phrase -> verse) aggregates them, with
+    # rarity weighting so global functors can't hijack the ranking.
+    acc = {}
     for i in idx:
-        vdb_id, lang, surface, strongs_csv, _vec = rows[i]
-        bases = _strongs_bases(lang, strongs_csv)
-        if not bases:
+        w = ids_[i]
+        df = vdb.execute("SELECT df FROM wdf WHERE vdb_id=?", (w,)).fetchone()
+        d = df[0] if df else 1
+        if d > 3000:
             continue
+        weight = math.log(1 + total_verses / (1 + d))
         s = float(scores[i])
-        for base in bases:
-            for (vid,) in conn().execute("SELECT DISTINCT verse_id FROM words WHERE strongs_base=? LIMIT 150", (base,)):
-                if vid not in verse_best or s > verse_best[vid]:
-                    verse_best[vid] = s
-                verse_hits[vid] = verse_hits.get(vid, 0) + 1
-    ranked = sorted(verse_best.items(), key=lambda t: -(t[1] + 0.02 * min(verse_hits.get(t[0], 1), 5)))[: limit * 3]
+        for (vid,) in vdb.execute("SELECT verse_id FROM wverse WHERE vdb_id=? LIMIT 400", (w,)):
+            acc[vid] = acc.get(vid, 0.0) + s * weight
+    ranked = sorted(acc.items(), key=lambda t: -t[1])[: limit * 3]
     out, seen = [], set()
     for vid, s in ranked:
         v = _one("SELECT book, chapter, verse, kjv_text, testament FROM verses WHERE id=?", (vid,))
@@ -895,8 +884,8 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
         })
         if len(out) >= limit:
             break
-    return {"query": q, "results": out, "index": "originals-words",
-            "vectors": len(rows), "lang": "heb+grc"}
+    return {"query": q, "results": out, "index": "originals-words-graph",
+            "vectors": len(ids_), "lang": "heb+grc"}
 
 
 # ── Graph-neighbor search: the brain's own 3D space ────────────────────
