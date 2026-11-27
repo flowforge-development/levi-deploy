@@ -74,14 +74,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"error": "method not allowed"}, 405, cache=False)
         try:
             if u.path in ("/", "/help"):
-                return self._send({"name": "levi", "one_api": "GET /query?ref=<ref>&caps=text,interlinear,context,language,purpose,chunks,crossref,ancient,topics", "endpoints": [
+                return self._send({"name": "levi", "one_api": "GET /query?ref=<ref>&caps=text,interlinear,context,language,purpose,chunks,crossref,ancient,topics,semantic,graph", "endpoints": [
                     "/verse?ref=John 3:16", "/interlinear?ref=John 3:16",
                     "/context?ref=John 3:16", "/language?ref=Daniel 2:4",
                     "/purpose?ref=Ezekiel 27", "/chunks?ref=Genesis 1:1",
                     "/crossref?ref=Rom 8:28", "/search?q=living water&limit=20",
                     "/word?q=H7307", "/topic?q=grace", "/commentary?ref=John 3:16",
                     "/overlap?book=Romans", "/character?q=Moses", "/ancient?ref=Genesis 1:1",
-                    "/sefaria?ref=Genesis 1:1", "/books", "/random", "/stats", "/doctor",
+                    "/sefaria?ref=Genesis 1:1", "/semantic?q=grace&limit=6", "/graph_neighbors?ref=Romans 5", "/books", "/random", "/stats", "/doctor",
                     "/study?q=living water&limit=6"],
                     "mcp": "POST /mcp (MCP over HTTP, JSON-RPC)",
                     "auth": "Authorization: Bearer <key>"})
@@ -157,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/doctor":
                 return self._send(query.doctor(), cache=False)
             if u.path == "/health":
-                return self._send({"ok": True, "one_api": "scripture-only"}, cache=False)
+                return self._send({"ok": True, "one_api": "scripture + graph + semantic (semantic is Pro-compute route)"}, cache=False)
             return self._send({"error": "not found"}, 404)
         except ValueError as exc:
             return self._send({"error": str(exc)}, 400)
