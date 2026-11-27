@@ -863,7 +863,7 @@ def semantic_search(q: str, limit: int = 15, testament: str = None, book: str = 
             continue
         weight = math.log(1 + total_verses / (1 + d))
         s = float(scores[i])
-        for (vid,) in vdb.execute("SELECT verse_id FROM wverse WHERE vdb_id=? LIMIT 400", (w,)):
+        for (vid,) in vdb.execute("SELECT verse_id FROM wverse WHERE vdb_id=? LIMIT 3000", (w,)):
             acc[vid] = acc.get(vid, 0.0) + s * weight
     ranked = sorted(acc.items(), key=lambda t: -t[1])[: limit * 3]
     out, seen = [], set()
