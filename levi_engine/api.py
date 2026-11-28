@@ -170,10 +170,24 @@ class Handler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_POST(self):
-        """MCP streamable HTTP transport (stateless JSON-RPC over POST)."""
+        """MCP streamable HTTP transport (stateless JSON-RPC over POST),
+        plus the thought-watcher /match surface."""
         if not self._authed():
             return self._send({"error": "unauthorized"}, 401, cache=False)
         u = urlparse(self.path)
+        if u.path == "/match":
+            try:
+                length = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                length = 0
+            if length <= 0 or length > 200_000:
+                return self._send({"error": "text required (<=200KB)"}, 400, cache=False)
+            try:
+                payload = json.loads(self.rfile.read(length))
+            except (ValueError, UnicodeDecodeError):
+                return self._send({"error": "parse error"}, 400, cache=False)
+            from .match import watch_text
+            return self._send(watch_text(payload.get("text", "")), cache=False)
         if u.path != "/mcp":
             return self._send({"error": "not found"}, 404, cache=False)
         try:
