@@ -200,6 +200,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send({"error": "unauthorized"}, 401, cache=False)
         u = urlparse(self.path)
         if u.path == "/match":
+            if not _rate_ok(u.path):
+                return self._send({"error": "rate limited (global match window)", "code": "rate_limited"}, 429, cache=False)
             try:
                 length = int(self.headers.get("Content-Length", "0") or "0")
             except ValueError:
