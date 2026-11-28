@@ -12,6 +12,7 @@ services:
       # Authorization: Bearer <key>. Unset keeps the public read-only door.
       LEVI_API_KEY: ${LEVI_API_KEY:-}
       LEVI_VEC_PATH: /data/wordindex2.db
+      LEVI_WATCHER_PATH: /data/watcher.db
       LEVI_GRAPH3D_PATH: /data/graph3d.json
       # Semantic query embedding (same model as the host-built index):
       # LEVI_EMBED_URL: https://openrouter.ai/api/v1
@@ -23,4 +24,5 @@ services:
     volumes:
       - ./levi.db:/data/levi.db:ro
       - ./wordindex2.db:/data/wordindex2.db:ro
+      - ./watcher.db:/data/watcher.db:ro
       - ./graph3d.json:/data/graph3d.json:ro
