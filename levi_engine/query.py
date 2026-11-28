@@ -813,7 +813,10 @@ def _semantic():
 
     vec_path = os.environ.get("LEVI_VEC_PATH", "wordindex2.db")
     try:
-        vdb = sqlite3.connect(f"file:{vec_path}?mode=ro", uri=True)
+        # check_same_thread=False: this read-only connection is cached in
+        # _semantic_cache and reused by every request thread of the HTTP
+        # server (the matrix lives in RAM alongside it).
+        vdb = sqlite3.connect(f"file:{vec_path}?mode=ro", uri=True, check_same_thread=False)
         rows = vdb.execute("SELECT vdb_id, surface, vec FROM wvec").fetchall()
         if not rows:
             raise RuntimeError("no vectors")

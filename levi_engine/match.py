@@ -70,7 +70,8 @@ class _Watcher:
         # brain animator shows, so the two can't bleed together.
         t0 = time.time()
         wpath = os.environ.get("LEVI_WATCHER_PATH", "watcher.db")
-        self._g = sqlite3.connect(f"file:{wpath}?mode=ro", uri=True)
+        # Cached across request threads; reads only.
+        self._g = sqlite3.connect(f"file:{wpath}?mode=ro", uri=True, check_same_thread=False)
         self._verses = [r[0] for r in self._g.execute("SELECT id FROM verses ORDER BY idx")]
         self._translit = {
             k: (vids, st)
