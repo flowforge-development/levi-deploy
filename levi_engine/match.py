@@ -99,6 +99,8 @@ class _Watcher:
         strongs, words, grams_out = [], [], []
 
         def add_vid(vid: str):
+            if len(verses) >= cap:
+                return
             lab = _label(vid)
             if lab not in seen_v:
                 seen_v.add(lab)
@@ -129,7 +131,7 @@ class _Watcher:
                 add_vid(f"{r['book']}.{r['chapter']}.{vv}")
 
         # ── 2. original-language tokens -> pericope gram index ──────────
-        if len(verses) < cap:
+        if True:
             orig = []
             for tok in TOKEN_RE.findall(text):
                 if _GRC.search(tok) and not _LATIN.search(tok):
@@ -165,18 +167,17 @@ class _Watcher:
                             grams_out.append({"g": g, "refs": refs[:8]})
 
         # ── 3. transliterations (hesed, charis, ruach …) ────────────────
-        if len(verses) < cap:
-            for tok in TOKEN_RE.findall(text):
-                if len(tok) < 3 or not _LATIN.match(tok):
-                    continue
-                hits = self._translit.get(_norm_grc(tok))
-                if not hits:
-                    continue
-                words.append(tok)
-                for vid, sb in hits[:8]:
-                    if sb:
-                        strongs.append(sb)
-                    add_vid(vid)
+        for tok in TOKEN_RE.findall(text):
+            if len(tok) < 3 or not _LATIN.match(tok):
+                continue
+            hits = self._translit.get(_norm_grc(tok))
+            if not hits:
+                continue
+            words.append(tok)
+            for vid, sb in hits[:8]:
+                if sb:
+                    strongs.append(sb)
+                add_vid(vid)
 
         # ── 4. Strong's codes written out ───────────────────────────────
         for m in STRONG_RE.finditer(text):
