@@ -25,7 +25,7 @@ from .config import DB_PATH, parse_ref
 
 # Verse refs: book names (1-2 words) + digits, dotted or coloned, ranges.
 REF_RE = re.compile(
-    r"\b(?:[1-3])?\s*[A-Za-z]+(?:\s+[A-Za-z]+)?\s*\d{1,3}"
+    r"\b(?:[1-3]\s+)?[A-Za-z]+[.\s]+\d{1,3}"
     r"(?:(?:[:.])\d{1,3})?(?:\s*[–—-]\s*\d{1,3})?\b"
 )
 STRONG_RE = re.compile(r"\b([HGhg])\s?(\d{1,4})\b")
@@ -39,7 +39,8 @@ _HEB_POINTS = re.compile(r"[\u0591-\u05c7\u05bd]")
 def _norm_grc(s: str) -> str:
     """Unaccent Greek for index lookup (norm_text in the VDB is unaccented)."""
     s = unicodedata.normalize("NFKD", s.lower())
-    return "".join(c for c in s if not unicodedata.combining(c))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s.replace("\u03c2", "\u03c3")  # final sigma -> base sigma
 
 
 def _norm_heb(s: str) -> str:
@@ -107,8 +108,15 @@ class _Watcher:
         for m in REF_RE.finditer(text):
             if len(verses) >= cap:
                 break
+            cand = m.group(0)
+            # recover a numeral that a preceding false match swallowed
+            # ("…and 1 Cor 13:4-7" often scans as "and 1" + "Cor 13:4-7").
+            prefix = text[: m.start()]
+            pm = re.search(r"\b([1-3])\s*$", prefix)
+            if pm:
+                cand = pm.group(1) + " " + cand
             try:
-                r = parse_ref(m.group(0))
+                r = parse_ref(cand)
             except Exception:
                 continue
             if not r or not r.get("book"):
