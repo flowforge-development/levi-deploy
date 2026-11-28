@@ -25,6 +25,29 @@ API_KEY = os.environ.get("LEVI_API_KEY", "")
 MCP_BLOCKED = {"levi_backup"}
 
 
+# Global rate windows — aggregate ceilings on the compute-heavy doors so an
+# army of budget-limited users can't collectively storm the container.
+# (Per-user shaping lives at the relay: 30 generations/5min + 10 tool steps.)
+_WINDOWS = {
+    "/semantic": (240, 60),   # 240 calls/min global: 4 users at max tolerated budget
+    "/match": (1200, 60),     # watcher flush streams; generous but bounded
+}
+_RATE = {}  # path -> deque of timestamps
+
+def _rate_ok(path: str) -> bool:
+    import collections
+    import time as _t
+    limit, win = _WINDOWS.get(path, (10**9, 60))
+    now = _t.monotonic()
+    q = _RATE.setdefault(path, collections.deque())
+    while q and now - q[0] > win:
+        q.popleft()
+    if len(q) >= limit:
+        return False
+    q.append(now)
+    return True
+
+
 class Handler(BaseHTTPRequestHandler):
     def _authed(self) -> bool:
         if not API_KEY:
@@ -138,7 +161,8 @@ class Handler(BaseHTTPRequestHandler):
                 from . import sefaria
                 return self._send(sefaria.fetch_verse(q.get("ref", "")), cache=False)
             if u.path == "/semantic":
-                # Vector search; disabled until the host ships verse_vectors.db
+                if not _rate_ok(u.path):
+                    return self._send({"error": "rate limited (global semantic window)", "code": "rate_limited"}, 429, cache=False)
                 return self._send(query.semantic_search(q.get("q", ""),
                                                         limit=int(q.get("limit", 15)),
                                                         testament=q.get("testament"),
