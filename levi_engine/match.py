@@ -21,7 +21,7 @@ import unicodedata
 from array import array
 from collections import defaultdict
 
-from .config import DB_PATH, parse_ref
+from .config import parse_ref
 
 # Verse refs: book names (1-2 words) + digits, dotted or coloned, ranges.
 REF_RE = re.compile(
@@ -64,26 +64,18 @@ class _Watcher:
     def _load(self):
         import sqlite3
 
+        # The watcher is fully self-contained: watcher.db carries the pericope
+        # gram index, the transliteration index, and the verse spine. It never
+        # opens the main Bible DB — deliberately separate from the data the
+        # brain animator shows, so the two can't bleed together.
         t0 = time.time()
         wpath = os.environ.get("LEVI_WATCHER_PATH", "watcher.db")
         self._g = sqlite3.connect(f"file:{wpath}?mode=ro", uri=True)
         self._verses = [r[0] for r in self._g.execute("SELECT id FROM verses ORDER BY idx")]
-        trans = defaultdict(list)
-        mdb = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-        n = 0
-        for word, sb, vid in mdb.execute(
-            "SELECT translit, strongs_base, verse_id FROM words WHERE translit<>''"
-        ):
-            k = _norm_grc(word)
-            if len(k) < 3:
-                continue
-            e = trans[k]
-            if len(e) < 12:
-                e.append((vid, sb))
-            n += 1
-        mdb.close()
-        # Only keep translits that are distinctive (2-400 occurrences).
-        self._translit = {k: v for k, v in trans.items() if 2 <= len(v) <= 400}
+        self._translit = {
+            k: (vids, st)
+            for k, vids, st in self._g.execute("SELECT k, vids, strongs FROM translit")
+        }
         ngrams = self._g.execute("SELECT COUNT(*) FROM grams").fetchone()[0]
         self._ready = True
         print(
@@ -170,14 +162,18 @@ class _Watcher:
         for tok in TOKEN_RE.findall(text):
             if len(tok) < 3 or not _LATIN.match(tok):
                 continue
-            hits = self._translit.get(_norm_grc(tok))
-            if not hits:
+            hit = self._translit.get(_norm_grc(tok))
+            if not hit:
                 continue
             words.append(tok)
-            for vid, sb in hits[:8]:
-                if sb:
-                    strongs.append(sb)
-                add_vid(vid)
+            idxs = array("H")
+            idxs.frombytes(hit[0])
+            for vi in list(idxs):
+                add_vid(self._verses[vi])
+            if hit[1]:
+                for code in hit[1].split(",")[:4]:
+                    if code not in strongs:
+                        strongs.append(code)
 
         # ── 4. Strong's codes written out ───────────────────────────────
         for m in STRONG_RE.finditer(text):
